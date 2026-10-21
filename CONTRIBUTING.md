@@ -1,22 +1,26 @@
 # Contributing
 
-Thanks for helping improve GoodNight. Keep changes deterministic, local-first, and specific to the supported UESTC flow unless you are deliberately proposing a separately scoped adapter.
+Keep changes deterministic and specific to the supported UESTC check-in flow. This fork supports isolated accounts and Linux server execution; it does not submit fallback situation reports.
 
-## Before submitting
+## Development
 
-1. Use Node.js 22 or later and install the lockfile dependencies with `npm ci`.
-2. Run `npm test`. These tests are offline and must use synthetic fixtures; do not make school requests in CI.
-3. Explain behavior changes and how you verified them. Distinguish offline tests from live school validation.
-4. Update the relevant documentation when changing CLI options, data paths, scheduling, submission, recovery, or platform behavior.
+1. Use Node.js 22+ and install dependencies with `npm ci`.
+2. Run `npm test` and `git diff --check`.
+3. Use synthetic fixtures. CI must not contact the school, load real browser profiles or submit check-ins.
+4. Update documentation when changing CLI options, private data paths, scheduling, authentication, location or verification behavior.
 
-## Privacy and safety
+## Private data
 
-Never commit credentials, cookies, browser profiles, storage state, real report text, student records, private logs, or screenshots containing personal data. Keep all runtime data in the ignored user data directory. Do not add code that fabricates location or treats an unverified submission as success. Do not add scheduled GitHub Actions that submit reports or recommend cloud/Docker execution for live reporting, which depends on real location and user-driven display login.
+Never commit credentials, cookies, browser profiles, school identity values, actual coordinates, student records, deployment account labels, personal report text, private logs, screenshots or server connection details. Keep operational notes local and ignored. Git ignore rules do not protect files already tracked or force-added.
 
-## Changes to school integration
+Fixed location must remain an explicit configuration mode and must not be described as measured real-time location or silently used as a browser-location fallback. Each account needs its owner's authorization and separate authentication and range verification. Interactive authentication remains under the account owner's control.
 
-School pages and APIs can change. Preserve fail-closed behavior when options, location integration, submission responses, or saved-record verification do not match expectations. Do not silently repair upstream changes using an LLM. Include the source and audit date for externally verified integration assumptions without publishing private account data.
+## Integration and recovery
+
+Preserve strict business-date, schedule, identity and geometry checks. Do not infer rejection from a missing response or repeat an uncertain submission. Success requires the matching saved school record. Changes to request behavior should include synthetic regression cases covering failures and recovery.
+
+School pages and APIs may change. Fail closed on unknown response shapes or location contracts; do not repair them by guessing or using an LLM. Public evidence should describe code contracts and sanitized outcomes without live account data.
 
 ## Pull requests
 
-Keep pull requests focused. Include a concise description, user-visible behavior, validation performed, and any unverified platform or school-side assumptions. Do not claim cross-platform or school E2E support based only on offline CI.
+Describe the concrete behavior change, relevant tests and remaining verification limits. Separate offline test results from live platform or school acceptance. Preserve upstream attribution and the MIT license.

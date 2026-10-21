@@ -74,6 +74,15 @@ test('renders a systemd user daemon attached to the graphical session target', (
   assert.match(result.uninstallCommands[0].args.join(' '), /disable --now/);
 });
 
+test('multi-account service passes the supervisor flag on each supported platform',()=>{
+  for(const platform of ['linux','darwin','win32']) {
+    const rendered=renderService({...base,platform,allAccounts:true});
+    assert.match(rendered.files[0].content,/--all-accounts/);
+    assert.match(rendered.files[0].content,/daemon/);
+    assert.equal(rendered.files.length,1);
+  }
+});
+
 test('systemd ExecStart escapes literal specifiers, quotes, and Unicode exactly', () => {
   const result = renderService({
     platform: 'linux', home: '/home/Zoë', dataDir: '/home/Zoë/$100%/"quoted"',

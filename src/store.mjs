@@ -20,8 +20,8 @@ export class Store {
     try { fs.writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx', flush: true }); fs.renameSync(temp, target); }
     finally { try { fs.unlinkSync(temp); } catch {} }
   }
-  acquire() {
-    const target = this.file('run.lock');
+  acquire(name = 'run.lock') {
+    const target = this.file(name);
     const token = crypto.randomUUID();
     for (let attempt = 0; attempt < 2; attempt++) {
       try { fs.writeFileSync(target, JSON.stringify({ pid: process.pid, token }), { flag: 'wx', mode: 0o600 });
@@ -36,8 +36,8 @@ export class Store {
     }
     return null;
   }
-  claimSubmission(date, fingerprint, kind = 'report') {
-    if (!['report', 'checkin'].includes(kind)) throw new Error('invalid_submission_kind');
+  claimSubmission(date, fingerprint, kind = 'checkin') {
+    if (kind !== 'checkin') throw new Error('invalid_submission_kind');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('invalid_business_date');
     try { fs.writeFileSync(this.file(`submission-${kind}-${date}.json`), JSON.stringify({ businessDate: date, fingerprint, kind, state: 'attempted', at: new Date().toISOString() }), { flag: 'wx', mode: 0o600, flush: true }); return true; }
     catch (e) { if (e.code === 'EEXIST') return false; throw e; }

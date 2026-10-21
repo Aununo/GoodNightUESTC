@@ -1,8 +1,5 @@
 {
   "version": 1,
-  "remark": "",
-  "keyword": "旅游",
-  "locationType": "OUTSIDE",
   "reportTime": "22:30",
   "sessionIntervalMinutes": 10,
   "catchUpMinutes": 30,
@@ -12,6 +9,10 @@
   "maxAccuracyMeters": 200,
   "preflightLeadMinutes": 20,
   "recoveryIntervalMinutes": 10,
-  "recoveryCutoff": "23:55",
-  "notifications": true
+  "recoveryCutoff": "23:30",
+  "notifications": true,
+  "submissionsEnabled": false,
+  "locationProvider": "browser",
+  "fixedLocation": null,
+  "autoRelogin": false
 }

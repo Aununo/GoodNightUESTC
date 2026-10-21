@@ -14,6 +14,7 @@ export function dueReport(config, state, now = new Date()) {
   return minute>=h*60+m && minute<h*60+m+config.catchUpMinutes;
 }
 export async function tick({config,store,now = new Date(),report = runWithRetries,session = inspect,preflight = inspect,notify}) {
+  if (config.submissionsEnabled === false) return {action:'disabled'};
   const state=store.read('scheduler.json',{}), date=shanghaiDate(now);
   const waitingForWindow=state.nextReportDate===date&&now.getTime()<Date.parse(state.nextReportAt);
   const normalDue=dueReport(config,state,now);
@@ -59,7 +60,7 @@ export async function tick({config,store,now = new Date(),report = runWithRetrie
   return {action:'idle'};
 }
 export async function daemon({config,store,signal}) {
-  store.log('daemon_started',{reportTime:config.reportTime,timeZone:'Asia/Shanghai'});
+  store.log('daemon_started',{reportTime:config.reportTime,timeZone:'Asia/Shanghai',submissionsEnabled:config.submissionsEnabled,locationProvider:config.locationProvider});
   while(!signal?.aborted) {
     try {await tick({config,store});}
     catch {try{store.log('daemon_tick_error',{reason:'runtime_error'});}catch{}}

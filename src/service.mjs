@@ -52,7 +52,7 @@ function resolveOptions(options = {}) {
     : paths.resolve(safe(options.dataDir, 'dataDir'));
   const entrypoint = paths.resolve(safe(options.entrypoint ?? defaultEntry, 'entrypoint'));
   const node = paths.resolve(safe(options.node ?? process.execPath, 'node'));
-  const args = ['daemon', '--data-dir', dataDir];
+  const args = ['daemon', ...(options.allAccounts ? ['--all-accounts'] : []), '--data-dir', dataDir];
   return { ...options, platform, env, home, dataDir, entrypoint, node, args };
 }
 
@@ -75,7 +75,14 @@ function renderDarwin(o) {
 function renderLinux(o) {
   const file = path.posix.join(o.home, '.config', 'systemd', 'user', `${SERVICE_ID}.service`);
   const exec = [o.node, o.entrypoint, ...o.args].map(systemdArg).join(' ');
-  const content = `[Unit]\nDescription=GoodNight user daemon\nPartOf=graphical-session.target\n\n[Service]\nType=simple\nExecStart=${exec}\nRestart=on-failure\n\n[Install]\nWantedBy=graphical-session.target\n`;
+  const target = o.server ? 'default.target' : 'graphical-session.target';
+  const content = [
+    '[Unit]', 'Description=GoodNight user daemon',
+    ...(o.server ? ['After=network-online.target'] : ['PartOf=graphical-session.target']),
+    '', '[Service]', 'Type=simple', 'ExecStart=' + exec,
+    'Restart=on-failure', 'RestartSec=15', 'UMask=0077',
+    '', '[Install]', 'WantedBy=' + target, '',
+  ].join('\n');
   return {
     files: [{ path: file, content }],
     commands: [

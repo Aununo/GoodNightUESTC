@@ -1,15 +1,23 @@
 # Security policy
 
-## Reporting a vulnerability
+## Reporting
 
-Please do not post credentials, personal records, cookies, browser profiles, or exploitable details in a public issue. Contact the repository maintainers privately through the security reporting channel configured on the hosting platform. If no private channel is configured, ask a maintainer for a private contact route without including sensitive data in the request.
+Do not publish credentials, personal records, browser profiles, private logs or exploitable details in an issue. Use the hosting platform's private reporting channel when available, or request a private contact route without including sensitive material.
 
-## Sensitive data
+## Local data boundary
 
-GoodNight stores browser and runtime state locally so it can use the user's authenticated session. Keep the data directory private. Never attach it, its logs, or its profile to an issue or pull request. The project does not need exported cookies; do not add cookie export or secret upload features.
+GoodNightUESTC keeps per-account browser and runtime state so it can use authorized school sessions. Treat the data directory and private deployment notes as sensitive. Do not attach them to issues or pull requests. The repository does not need exported cookies, tokens or password databases.
 
-If check-in or a report may have been submitted but the client did not verify it, first inspect the school record with `check`. Separate local per-operation POST journals prevent blind automatic retries. In particular, an ambiguous check-in outcome must never be treated as a definitive rejection that permits report fallback. The journals cannot determine the server's final state while the school is unavailable.
+Persistent browser storage and its encryption format are not a substitute for operating-system access controls. The optional Linux saved-login reader is limited to the account's own profile and exact school realm. Unsupported formats, ambiguous entries and interactive challenges stop automatic recovery.
 
-## Supported versions
+Account identity bindings detect student changes and duplicate registration within the configured account registry. They do not provide isolation between unrelated operating-system users or protect a compromised server.
 
-The project currently targets Node.js 22+ and macOS, Windows, and Linux. Live school behavior and platform authentication/location remain unverified for the new portable package; CI is offline only. Security reports are welcome for the CLI, dependencies, service installation/removal, local file handling, and authentication boundaries.
+## Submission boundary
+
+Only a matching saved `CHECKED_IN` record confirms check-in success. Uncertain requests are reconciled with reads rather than repeated POSTs. Journals cannot determine the server's final state while it is unavailable and do not guarantee recovery from every disk or power failure.
+
+Fixed coordinates are explicit client-provided values, not proof of physical presence. School authentication and validation policies remain authoritative.
+
+## Scope
+
+Reports are welcome for the CLI, dependency use, service installation, file handling, account isolation and authentication boundaries. The project targets Node.js 22+ and provides macOS, Windows and Linux service definitions; synthetic CI does not establish live school or platform compatibility.

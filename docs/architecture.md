@@ -1,37 +1,40 @@
 # Architecture
 
-## Runtime flow
+## Account and browser boundaries
 
-GoodNight is a deterministic Node.js command-line program backed by Playwright. The current adapter targets one service: UESTC's “Good Night Chengdian” portal. The runtime should fail closed whenever a required page element, option, or location function cannot be identified.
+GoodNightUESTC uses Node.js, Playwright and a persistent Chromium-family browser profile. School-specific requests live in `src/adapters/uestc.mjs`; configuration and account registry handling live in `src/config.mjs` and `src/accounts.mjs`.
 
-The daily operation flow is:
+The original account is `default` at the root data directory. Other accounts use `accounts/<id>`. Each has its own browser profile, configuration, identity binding, locks, schedule, submission journal and result logs. New accounts start with submissions and automatic reauthentication disabled. School identity hashes prevent a directory from silently switching students or registering the same identity twice.
 
-1. Load per-user configuration and the authenticated current-day record and server schedule.
-2. Obtain real location through the frontend API with GCJ-02 requested; reject unknown or over-limit accuracy (default 200 m).
-3. During the check-in server window, try check-in using available valid dormitory geofences.
-4. If no valid dormitory geofence is available or check-in is definitively rejected, fetch a fresh record using the current authenticated session. Fall back to report only if it remains `PENDING` and actual location permits that report type. The default `OUTSIDE` type is valid only for an actually outside-campus location.
-5. Read the saved record. For check-in verify the date and `CHECKED_IN` status; for a report verify date, `STUDENT_REPORTED`, location type, category, and configured text.
+## One check-in
 
-`run --dry-run` performs preflight, including actual location, but does not issue either the check-in or report POST. `check` reads the current day's saved school record. A missing or mismatching saved record is not success.
+1. Validate configuration and acquire the account's browser lock.
+2. Start its persistent browser context and verify business authentication.
+3. Read today's record. Require the Shanghai business date and a recognized status; skip records already handled or exempt.
+4. Read the effective school schedule and enforce its check-in window and local cutoff.
+5. Obtain browser-provided location or explicit fixed configuration, validate accuracy, and match a returned dormitory circle.
+6. Re-read the record and schedule immediately before submitting.
+7. Flush an exclusive daily submission claim, submit one check-in request, and reconcile using read-only record queries.
+8. Confirm the matching date and `CHECKED_IN`, close the browser and release the lock.
 
-## Reliability and scheduling
+No fallback situation-report submission exists. A dry run follows the read-only preparation path and does not claim or send a check-in POST. Other completed record states can be skipped without claiming that this client submitted them.
 
-An exclusive lock prevents concurrent local runs. Separate per-date, per-operation exclusive claim files are synchronously flushed before check-in and report POSTs. A restart or ambiguous POST with a claim present performs GET reconciliation rather than repeating that POST. A timeout or other ambiguous check-in outcome blocks report fallback; the system must not infer rejection from a missing response. If a crash or timeout leaves an uncertain outcome, only a verified saved school record establishes success; use `check` before taking further action. Local flush/rename patterns do not guarantee survival of every power loss or server-side record retention.
+## Authentication
 
-The daemon uses `Asia/Shanghai` regardless of host timezone and checks scheduling every 30 seconds. Its default 20-minute preflight window is once per day before the configured report time; preflight validates the business session and real location without check-in/report POSTs. The existing 30-minute quick catch-up remains, followed by recovery checks every 10 minutes until the exclusive 23:55 cutoff, subject to server windows. An existing macOS 600-second keeper samples the preflight window at its first tick inside the window, not at an exact 22:10 time. See [`resilience.md`](resilience.md) for failure archives, alert limits, and restart behavior.
+The manual login interface and automatic requests use the same account profile. Unified authentication and the registered application entry establish business authentication separately. Optional recovery is triggered only by explicit login expiry, not a network failure. Saved school credentials are scoped to that profile and school origin. Unknown forms, interactive challenges and identity mismatches stop recovery.
 
-## Local data and trust boundaries
+Validated school SESSION credentials receive a minimum local retention period without shortening an existing longer expiry. This affects browser storage only; it does not change server expiry or revocation. Trusted-browser and MFA policies remain school-controlled.
 
-Configuration and browser state live in the OS-specific user data directory, outside the checkout. They can be redirected using `GOODNIGHT_HOME` or `--data-dir`. Authentication happens in the user's browser profile; cookies or storage state must not be exported into logs or source control. After successful server validation, SESSION receives a minimum seven-day local retention period without shortening an existing longer expiry. Failed requests and rejected authentication do not extend it. This helps preserve credentials through connection outages; it does not establish or change the school's server-side session lifetime. See the [October 14 investigation](incidents/2026-10-14-session-expiry.md).
+## Location
 
-Location first checks and invokes `globalThis.uni.getLocation`, bound to its owning `uni` object. If unavailable, an Acorn AST parser discovers the current same-origin entry module and student-page chunk, identifies the named import actually called with `{ type: "gcj02", success, fail }`, verifies that the entry module exports that name, then dynamically imports the entry and invokes that export. The `frontendLocationExport` config field defaults to `auto`; old explicit values such as `bk` or `bl` are accepted for config compatibility but deprecated and ignored in favor of the source contract. If neither path exists, stop with an error rather than try guessed aliases, infer coordinates, or use an LLM repair. Location accuracy must be known and at or better than `maxAccuracyMeters` (default 200 m). Operators may change the threshold only to match a genuine location provider's real accuracy, never to force acceptance of fixed or fabricated coordinates.
+Browser mode invokes the school frontend's location provider with GCJ-02 requested. If a global API is unavailable, Acorn parses current same-origin entry and student chunks and resolves the imported location binding. Ambiguous or changed contracts fail closed rather than guessing aliases.
 
-The default report reason is `在校外旅游会注意自己安全，导员放心`, with keyword `旅游` (combined with the `OUTSIDE` location type). Blank input during initialization selects this default. Custom reasons use the frontend-style 10–200 UTF-16 code-unit limit. The app must not submit the default `OUTSIDE` report for a location classified on campus.
+Fixed mode reads private configuration directly. Its accuracy and coordinates are explicit values rather than measurements. Both modes validate precision and the school's available circle geometry. Frontend logic does not establish the backend's complete validation rules.
 
-## Extension boundary
+## Scheduling and storage
 
-The current code supports the UESTC flow only. Supporting another school requires a separately designed adapter for its options, authentication, location, submission, and saved-record verification. The existence of this CLI does not imply compatibility with another institution.
+The single-account daemon loads configuration at startup. The multi-account supervisor reloads account configuration each cycle and awaits each account sequentially, limiting concurrent browser use. One account's runtime or configuration error is recorded and processing continues with later accounts. A separate supervisor lock prevents duplicate multi-account daemons.
 
-## Validation boundary
+All business dates use `Asia/Shanghai`. State writes use a flushed temporary file and rename. The check-in claim is exclusively created and flushed before the POST; after an uncertain response or restart, later runs read the saved school record instead of repeating the POST. These client mechanisms cannot guarantee server retention or survival of every disk or power failure.
 
-The historical macOS validation and the portable package have different evidence. The 2026-10-12 incident record distinguishes old-runtime report recovery, shared AST-locator validation on macOS, new-adapter read-only checks, and the uncompleted portable CLI E2E in [`incidents/2026-10-12-location-export.md`](incidents/2026-10-12-location-export.md). Original automation completed a report with authenticated Chrome on 2026-10-10 and later read the saved statuses/content. The new repository has not yet completed a school E2E run. CI runs offline synthetic tests, including service-definition generator tests; it does not validate a live service installation, school access, GPS, or authentication on any operating system.
+Credentials, coordinates, real records and deployment evidence belong in private data storage and local notes, not in published source or logs. Offline tests exercise the control flow using synthetic data and are not proof of live acceptance.

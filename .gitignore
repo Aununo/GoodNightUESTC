@@ -24,3 +24,45 @@ run.lock
 submission-*.json
 scheduler.json
 last-session.json
+accounts/
+accounts.json
+account.json
+identity.json
+accounts-last-tick.json
+accounts-daemon.lock
+accounts.lock
+identities.lock
+
+# Local deployment notes and private working copies
+/SERVER_PRIVATE.md
+/*.private.md
+.private/
+backups/
+
+# Runtime state and diagnostic exports (also when a custom data directory is used)
+config.initial.json
+config.before-*.json
+accounts.before-*.json
+auth-recovery.json
+login-result.json
+last-*.json
+available-locations.json
+location-selection.json
+setup-pending.json
+activation.json
+authenticated-preflight.json
+schedule-change.json
+*-verification.json
+failure-*.json
+notification-state.json
+*.jsonl
+
+# Browser databases and private authentication material
+Login Data*
+Cookies*
+Local State
+.ssh/
+*.pem
+*.key
+id_rsa
+id_ed25519

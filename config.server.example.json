@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "reportTime": "22:30",
+  "browserChannel": "chromium",
+  "headless": true,
+  "recoveryCutoff": "23:30",
+  "notifications": false,
+  "submissionsEnabled": false,
+  "locationProvider": "browser",
+  "fixedLocation": null,
+  "autoRelogin": false
+}

@@ -1,11 +1,14 @@
 import { apiSucceeded } from '../policy.mjs';
 import { locate } from '../location.mjs';
+import { configuredLocation } from '../config.mjs';
+import { recoverSchoolSession } from '../auth-recovery.mjs';
+import { bindAccountIdentity } from '../accounts.mjs';
 export const ORIGIN = 'https://jzsz.uestc.edu.cn';
 export const CLIENT_SESSION_RETENTION_SECONDS = 7 * 24 * 3600;
 export const PORTAL = `${ORIGIN}/#/hall/home`;
 export const PAGE = `${ORIGIN}/daily-checkin-h5/index.html?appId=294#/pages/student/report-today/home/index`;
 export class BusinessError extends Error { constructor(code) { super(code); this.code = code; } }
-export function createUestcAdapter(ctx, config) {
+export function createUestcAdapter(ctx, config, {store,allowRecovery=config.autoRelogin===true,recover=recoverSchoolSession}={}) {
   async function request(p, body) {
     let response;
     try { response = await ctx.request.fetch(ORIGIN + '/daily-checkin/api' + p, { method: body ? 'POST' : 'GET', data: body, headers: { platform: 'h5' }, timeout: 15000, maxRedirects: 0 }); }
@@ -16,24 +19,34 @@ export function createUestcAdapter(ctx, config) {
     if (r.code === 5000) throw new BusinessError('need_login');
     return r;
   }
-  return {
-    async authenticate() {
+  async function verifyAuthentication() {
       const r = await request('/auth/user-info');
       if (!apiSucceeded(r) || !r.data) throw new BusinessError('auth_check_failed');
+      if(store) {
+        try {bindAccountIdentity(store,r.data.userData);}
+        catch(error) {throw new BusinessError(error.code||'account_identity_unavailable');}
+      }
       const session = (await ctx.cookies(ORIGIN)).find(c => c.name === 'SESSION' && c.domain === new URL(ORIGIN).hostname);
       // Preserve validated credentials through a prolonged connection outage.
       // Client retention is NOT server-side reauthentication or guaranteed renewal.
       if (session) await ctx.addCookies([{ ...session, expires: Math.max(session.expires || 0, Math.floor(Date.now() / 1000) + CLIENT_SESSION_RETENTION_SECONDS) }]);
+  }
+  return {
+    async authenticate() {
+      try {await verifyAuthentication();}
+      catch(error) {
+        if(error.code!=='need_login'||!allowRecovery||!store)throw error;
+        if(!await recover(ctx,{verify:verifyAuthentication,store}))throw new BusinessError('need_login');
+      }
     },
     getToday: () => request('/student-checkin-record/today'),
     getSchedule: () => request('/checkin-schedule/effective'),
     getCheckinLocations: () => request('/checkin-location/available-locations'),
     submitCheckin: body => request('/student-checkin-record/checkin', body),
     async getUserAgent() { const page = ctx.pages()[0] || await ctx.newPage(); return page.evaluate(() => navigator.userAgent); },
-    getFences: () => request('/campus-fence/current-student'),
-    getKeywords: () => request('/case-keyword/active?locationTypeCode=' + config.locationType),
-    submit: body => request('/student-checkin-record/report', body),
     async getLocation() {
+      const fixed = configuredLocation(config);
+      if (fixed) return fixed;
       await ctx.grantPermissions(['geolocation'], { origin: ORIGIN });
       const page = await ctx.newPage();
       try {

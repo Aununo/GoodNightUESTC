@@ -1,8 +1,20 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-export const DEFAULT_REASON = '在校外旅游会注意自己安全，导员放心';
-export const DEFAULTS = Object.freeze({ version: 1, remark: DEFAULT_REASON, keyword: '旅游', locationType: 'OUTSIDE', reportTime: '22:30', sessionIntervalMinutes: 10, catchUpMinutes: 30, browserChannel: 'chrome', headless: true, frontendLocationExport: 'auto', maxAccuracyMeters: 200, preflightLeadMinutes: 20, recoveryIntervalMinutes: 10, recoveryCutoff: '23:55', notifications: true });
+export const DEFAULTS = Object.freeze({ version: 1, reportTime: '22:30', sessionIntervalMinutes: 10, catchUpMinutes: 30, browserChannel: 'chrome', headless: true, frontendLocationExport: 'auto', maxAccuracyMeters: 200, preflightLeadMinutes: 20, recoveryIntervalMinutes: 10, recoveryCutoff: '23:30', notifications: true, submissionsEnabled: false, locationProvider: 'browser', fixedLocation: null, autoRelogin: false });
+
+export function configuredLocation(config) {
+  if (config.locationProvider !== 'fixed') return null;
+  const value = config.fixedLocation;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).some(k => !['latitude', 'longitude', 'accuracy'].includes(k))
+      || ![value.latitude, value.longitude, value.accuracy].every(Number.isFinite)
+      || Math.abs(value.latitude) > 90 || Math.abs(value.longitude) > 180
+      || value.accuracy < 0 || value.accuracy > config.maxAccuracyMeters) {
+    throw new Error('固定定位必须填写有效的 GCJ-02 经纬度及精度，且精度不得超出 maxAccuracyMeters');
+  }
+  return { latitude: value.latitude, longitude: value.longitude, accuracy: value.accuracy };
+}
 export function defaultDataDir({ platform = process.platform, home = os.homedir(), env = process.env } = {}) {
   const paths=platform==='win32'?path.win32:path.posix;
   if (env.GOODNIGHT_HOME) return paths.resolve(env.GOODNIGHT_HOME);
@@ -14,11 +26,7 @@ export function validateConfig(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('配置必须是 JSON 对象');
   if (Object.keys(input).some(k => !Object.hasOwn(DEFAULTS, k))) throw new Error('配置包含未知字段，请参考 config.example.json');
   const c = { ...DEFAULTS, ...input };
-  if (typeof c.remark === 'string' && !c.remark.trim()) c.remark = DEFAULT_REASON;
   if (c.version !== 1) throw new Error('不支持的配置版本');
-  if (typeof c.remark !== 'string' || c.remark.trim().length < 10 || c.remark.length > 200 || c.remark.includes('\0')) throw new Error('请填写本人真实说明：10–200字');
-  if (typeof c.keyword !== 'string' || !c.keyword.trim() || c.keyword.length > 200 || /[\0\r\n]/.test(c.keyword)) throw new Error('情况类别无效');
-  if (!['OUTSIDE', 'CAMPUS'].includes(c.locationType)) throw new Error('locationType 必须是 OUTSIDE 或 CAMPUS');
   if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(c.reportTime)) throw new Error('时间必须是 HH:mm（上海时间）');
   if (!Number.isInteger(c.sessionIntervalMinutes) || c.sessionIntervalMinutes < 1 || c.sessionIntervalMinutes > 30) throw new Error('会话检查间隔必须为1–30分钟');
   if (!Number.isInteger(c.catchUpMinutes) || c.catchUpMinutes < 1 || c.catchUpMinutes > 120) throw new Error('补执行窗口必须为1–120分钟');
@@ -26,6 +34,11 @@ export function validateConfig(input) {
   if (!Number.isInteger(c.recoveryIntervalMinutes) || c.recoveryIntervalMinutes < 1 || c.recoveryIntervalMinutes > 30) throw new Error('补执行检查间隔必须为1–30分钟');
   if (typeof c.recoveryCutoff !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(c.recoveryCutoff) || c.recoveryCutoff > '23:55' || c.recoveryCutoff <= c.reportTime) throw new Error('补执行截止须晚于每日时间且不晚于23:55');
   if (typeof c.notifications !== 'boolean') throw new Error('notifications 必须是布尔值');
+  if (typeof c.submissionsEnabled !== 'boolean') throw new Error('submissionsEnabled 必须是布尔值');
+  if (typeof c.autoRelogin !== 'boolean') throw new Error('autoRelogin 必须是布尔值');
+  if (!['browser', 'fixed'].includes(c.locationProvider)) throw new Error('locationProvider 必须是 browser 或 fixed');
+  if (c.locationProvider === 'browser' && c.fixedLocation !== null) throw new Error('使用浏览器定位时 fixedLocation 必须为 null');
+  if (c.locationProvider === 'fixed') configuredLocation(c);
   if (!['chrome', 'msedge', 'chromium'].includes(c.browserChannel)) throw new Error('浏览器必须为 chrome、msedge 或 chromium');
   if (typeof c.headless !== 'boolean') throw new Error('headless 必须是布尔值');
   if (typeof c.frontendLocationExport !== 'string' || !/^[\w$]{1,80}$/.test(c.frontendLocationExport)) throw new Error('定位导出名无效');

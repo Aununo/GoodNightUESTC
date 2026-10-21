@@ -1,45 +1,52 @@
-# Resilience and recovery
+# 调度、恢复与排错
 
-GoodNight adds bounded checks around the existing daily flow. These mechanisms improve observability and provide another chance to run while the school window is open; they cannot keep a sleeping computer awake, renew a server session, guarantee OS notifications, or guarantee that the school accepts or retains a submission.
+## 时间和预检
 
-## Daily timing
+所有业务日期和时间使用 `Asia/Shanghai`。配置默认值：
 
-All schedule calculations use `Asia/Shanghai`.
-
-| Setting | Default | Behavior |
+| 设置 | 默认值 | 含义 |
 | --- | --- | --- |
-| `reportTime` | `22:30` | Start of the normal report/check-in attempt |
-| `preflightLeadMinutes` | `20` | Run one preflight per Shanghai calendar day from `reportTime - 20 min` up to, but not including, `reportTime` (normally 22:10–22:30) |
-| `catchUpMinutes` | `30` | Keep the existing quick channel available after the configured time; eligible pre-submit transient failures (for example, login, location, or unknown outcomes not marked submitted) are retried every two minutes while its retry deadline remains open |
-| `recoveryIntervalMinutes` | `10` | After the quick channel is missed or exhausted, make bounded recovery attempts at this cadence |
-| `recoveryCutoff` | `23:55` | Exclusive same-day hard cutoff; server schedule windows can close sooner |
+| `reportTime` | `22:30` | 每日常规尝试时间 |
+| `preflightLeadMinutes` | `20` | 提前运行一次只读预检 |
+| `catchUpMinutes` | `30` | 常规尝试后的快速补执行窗口 |
+| `recoveryIntervalMinutes` | `10` | 后续恢复检查间隔，单位分钟 |
+| `recoveryCutoff` | `23:30` | 当日恢复检查的排他截止时间 |
 
-The standalone daemon checks its schedule every 30 seconds. A preflight authenticates with the school business API and checks actual browser-provided location and configured accuracy. It does not use today's school record as its success criterion; loading the school page may perform its own reads. It does not change that record or send either the check-in or report POST. A successful preflight records `lastPreflight`; a failure records its phase and date and may trigger a local alert.
+调度约每 30 秒检查一次。预检验证业务登录、位置精度和宿舍圈，不发送签到 POST。未启用提交的账号不会由后台自动启动浏览器或访问学校。
 
-An existing macOS keeper that samples every 600 seconds does not create a new exact 22:10 launch. After a hot update it will perform preflight at its first tick inside the 22:10–22:30 interval, which can be nearly ten minutes after the interval begins. The existing 22:30 primary run remains the primary attempt; the keeper can provide the preflight and recovery backup. This timing depends on the machine and keeper being awake and running.
+学校有效时段始终参与判断；签到提交保留结束前 5 分钟余量，配置截止时间不能延长学校时段。业务日期不匹配、未知记录状态或无效时段均停止。
 
-After a missed or exhausted quick path, recovery uses the current authenticated session and current server schedule while both the recovery cutoff and server operation window permit it. It checks for completion at each attempt. A 23:55 cutoff is exclusive; it does not extend a school window. Recovery ends on the Shanghai business date and does not silently roll a missed report into the next day.
+## 提交与结果不明
 
-## Submission journal and restart behavior
+签到前独占创建并同步刷写当日提交标记。只要已尝试过 POST，后续恢复就查询保存记录，不重复该请求。响应丢失或超时不等于学校拒绝；仅对应业务日期的 `CHECKED_IN` 能确认签到成功。
 
-Before each check-in or report POST, GoodNight creates a separate per-date, per-operation exclusive claim file with synchronous flush enabled. If a claim represents an unresolved or ambiguous POST, a later run performs authenticated GET reconciliation against the saved school record and does not repeat that POST. The explicit rejected-check-in case can proceed to a report only after a fresh `PENDING` record and location/type checks; it does not resend the same check-in. If the record is not confirmed, the result remains uncertain and the operator can inspect it with `check`.
+已经完成或免打卡时跳过。程序不提交备用情况填报，也不把不确定结果转换成其他操作。不要删除提交标记来强制重发，应先用 `check` 核对学校记录。
 
-Ordinary state files are written to a temporary file with flush enabled and then renamed into place. These local write patterns reduce duplicate submissions and partial state updates, but they are not a guarantee against every sudden power loss, filesystem failure, or server-side loss. A verified saved school record is the success criterion. Client-side session upkeep does not establish how long the server retains authentication.
+## 登录恢复
 
-## Failure records and status
+会话有效时直接复用。仅在业务接口明确要求登录且该账号开启 `autoRelogin` 时，尝试复用 SSO 或已保存的学校登录信息。网络失败不触发反复输入密码。
 
-Daemon-managed failures are recorded by Shanghai date and phase (for example, preflight, session, daily report, or recovery). Per-date/per-phase files retain each phase's current failure/resolution state; `failure-index.json` contains dates only, and `last-failure.json` points to the newest unresolved failure known to that index, or to the most recent resolved summary when no unresolved failure remains. Run `node bin/goodnight.mjs status` to inspect `lastPreflight`, `lastFailure`, and scheduler state. A manually invoked `run` still writes `last-result` and logs but does not use the daemon phase-notification recorder. The recorder stores allowlisted status fields rather than report text, credentials, coordinates, or raw error messages.
+恢复开始前写入状态；失败、中断或交互验证会要求本人处理，直到记录一次更新的手动登录才允许再尝试。成功恢复后有 10 分钟间隔。客户端保留凭据不代表服务器会话或浏览器信任永不过期。
 
-A valid session resolves a session-phase failure only. It does not erase a failed report. A verified same-day completion can resolve that date's failure records. A success on a later date does not resolve a prior missed or failed day; older unresolved failure information remains available through the archive and latest-unresolved summary.
+## 独立账号和进程
 
-Failure recording and native notification delivery are best effort. If outcome bookkeeping or local notification IPC fails, the recorder logs a sanitized bookkeeping event and does not replace the operation result or throw from the recorder into the recovery path. A failure to write the submission claim itself remains fail-closed: GoodNight must not send a POST without its claim.
+各账号的浏览器锁、每日提交标记、完成日期和失败记录独立。统一调度按账号依次执行，每轮读取最新配置；一个账号失败不会阻止后续账号。其主进程另有独立锁。
 
-## Local notifications
+单账号 `daemon` 的配置在启动时读取；`daemon --all-accounts` 会每轮重读清单和各账号配置。修改源码或服务绝对路径仍需要明确的维护操作。
 
-`notifications` defaults to `true`. For a daemon-managed failure, GoodNight makes at most one local alert attempt per Shanghai date and phase, then deduplicates repeats. Alerts contain only a phase and result summary. Set `notifications: false` to disable the UI attempt; daemon status files and logs continue to be written. No email, remote push service, or LLM integration is involved, so this feature does not incur third-party messaging or LLM service fees.
+## 状态、失败记录与通知
 
-Implementation uses AppleScript `display notification` on macOS ([Apple documentation](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/DisplayNotifications.html)), `notify-send` on Linux (the desktop notification interface is described by the [freedesktop.org specification](https://specifications.freedesktop.org/notification/latest-single/)), and the legacy `WScript.Shell.Popup` method via PowerShell on Windows ([Microsoft method reference](https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/windows-scripting/x83z1d9f(v=vs.84))). Windows popups are requested for five seconds. The helper has an eight-second process timeout. Availability of a GUI session, the relevant command, notification permissions, and actual delivery vary by OS and configuration; Windows and Linux delivery have not been validated on live systems. An attempted alert can fail or be suppressed, so use `status` and local logs as the durable record.
+```bash
+node bin/goodnight.mjs status --all-accounts
+node bin/goodnight.mjs check --account student-b
+```
 
-## Applying configuration changes
+`status` 读取本地最近结果、预检、登录恢复、失败及调度状态；`check` 读取学校当天记录。日志只保存状态摘要，不记录密码、Cookie、完整请求体、精确坐标或原始异常文本。
 
-The daemon loads configuration at startup; it does not hot-reload edits to `config.json`. Restart the running daemon/service after changing these settings so it reloads config; use `service install` to regenerate/reapply its definition when needed, then check `status`. The exact restart step is OS-specific. The service definition keeps the absolute Node and checkout paths captured at installation; moving the checkout requires reinstalling it. Updating files in an existing legacy runtime can update its code without changing its existing scheduler/service installation paths.
+失败按日期和阶段归档；会话成功只解决会话失败，同日完成可解决同日失败，后来一天成功不会擦除较早的未解决记录。状态文件和通知写入是尽力而为，不能替代提交前的持久化标记。
+
+启用 `notifications` 后，后台对同日同阶段至多尝试一次本地通知。服务器配置示例关闭桌面通知；没有邮件、远程消息或 LLM 通知。操作系统界面或通知权限可能使本地提醒不可见，应以保存的状态和学校记录为准。
+
+## 验证边界
+
+测试覆盖未知响应回读、日期变化、时段结束、定位失败、并发锁、进程恢复、多账号隔离及登录挑战等情形，全部使用合成数据。真实账号、坐标、操作时间和验证证据应保存在本地私有笔记及状态目录，不写入公开故障报告。

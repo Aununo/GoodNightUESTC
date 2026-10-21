@@ -1,41 +1,38 @@
-# Portability and operations
+# 平台与数据目录
 
-## Supported execution environments
+## 支持范围
 
-The package targets Node.js 22+ on macOS, Windows, and Linux. This is a declared target, not proof that live UESTC reporting works on each platform. The prior macOS automation and shared AST locator have runtime evidence, and the new adapter has authenticated read-only location/record evidence. The new portable CLI has not completed a school submission E2E; Windows and Linux location/authentication remain unverified.
+项目使用 Node.js 22+，提供 macOS、Windows 和 Linux 的服务定义生成器。Linux 额外提供不依赖图形桌面的服务器模式。平台支持代码及离线测试不等于每台设备均已完成学校登录、定位和真实提交验证。
 
-CI checks deterministic code using Node.js 22 and 24 on Ubuntu, macOS, and Windows with synthetic offline tests, including service-definition generator tests. These tests exercise migration candidates and synthetic service-definition output checks; they do not prove full schema conformance or that a service was installed or run on the corresponding real OS. CI does not contact the school, perform real geolocation, or test authentication.
+CI 使用合成数据测试，不访问学校、不读取真实浏览器资料、不提交签到。浏览器二进制、系统运行库、图形登录界面和可用定位提供方需要分别准备。
 
-## Browser and location
+## 浏览器与登录
 
-The browser channel is `chrome` by default, with `msedge` and `chromium` options. Installed Chrome is recommended. Playwright-managed Chromium can be installed with `npx playwright install chromium`; choose it with `init --browser chromium`. A browser binary alone does not provide campus location. The operating system and browser need a location provider that can supply the user's real location, in GCJ-02 as expected by this integration. Location first calls `globalThis.uni.getLocation` bound to `uni`; if unavailable, Acorn parses the current same-origin entry and student-page chunks to identify the named import actually used with `{ type: "gcj02", success, fail }`, confirms its export exists, and invokes it from the entry module. `frontendLocationExport` defaults to `auto`. Legacy explicit values such as `bk` and `bl` are accepted but deprecated and ignored in favor of current source discovery. If the contract is missing, ambiguous, or changed, location fails closed without guessing aliases. `maxAccuracyMeters` defaults to 200 m and unknown/over-limit accuracy fails closed. Change the limit only to accommodate the genuine provider's real accuracy. Do not replace failed location with fixed or fabricated coordinates.
+支持 `chrome`、`msedge`、`chromium`。通过 `init --browser chromium` 选择 Playwright 管理的浏览器，使用项目依赖对应的 Playwright 命令安装浏览器及系统依赖。
 
-Authentication uses a persistent, isolated per-user browser profile. Run `login`, complete unified authentication in the opened browser, click “晚安成电”, then press Enter in the terminal for the online business-authentication check. Logging in through your ordinary browser does not transfer authentication to GoodNight's isolated profile. Do not copy that profile between operating systems or user accounts; repeat manual login on the destination device. Server-side session expiry is unknown, so `need_login` is a failure requiring login.
+每个账号有独立持久化 profile。普通浏览器中的登录不会自动转移到项目 profile；第一次需要在项目浏览器内完成。不要跨用户或操作系统复制密码库，迁移后应本人重新登录。
 
-The [2026-10-12 location-export incident](incidents/2026-10-12-location-export.md) records the prior locator failure, shared-helper Mac runtime checks, and separate new-adapter read-only checks. Those checks do not establish full school submission E2E for the portable CLI or live location/authentication on Windows or Linux.
+浏览器定位模式依赖学校页面提供方，并请求 GCJ-02。固定模式是独立的显式配置选项，不属于定位 API 的自动降级。未知或精度超限的结果会停止任务。
 
-## Data locations
+## 数据目录
 
-Default private data locations:
-
-| Platform | Directory |
+| 平台 | 默认根目录 |
 | --- | --- |
 | macOS | `~/Library/Application Support/GoodNight` |
 | Windows | `%LOCALAPPDATA%\GoodNight` |
-| Linux | `$XDG_STATE_HOME/goodnight`, otherwise `~/.local/state/goodnight` |
+| Linux | `$XDG_STATE_HOME/goodnight`，否则 `~/.local/state/goodnight` |
 
-Set `GOODNIGHT_HOME` or pass `--data-dir PATH` to select another directory. Keep config, browser profiles, auth state, logs, and runtime state outside the source checkout and out of version control.
+`GOODNIGHT_HOME` 或 `--data-dir` 可以更换根目录。`default` 直接使用根目录，其他账号位于 `accounts/<id>` 下。私有账号清单、配置、浏览器资料、身份绑定、日志及状态不要放进版本控制。
 
-## Daemon lifecycle
+## 服务模式
 
-`daemon` runs the scheduler in the foreground. `service install` installs one per-user OS service to keep it running; `service install --write-only` writes the definition without enabling it. `service remove` removes the generated service. The service is tied to the absolute Node and checkout paths present at install time, so reinstall after moving the checkout.
+- Linux 桌面：默认服务依赖 `graphical-session.target`。
+- Linux 服务器：`service install --server` 使用用户 `default.target`，配合 linger 持续运行。
+- macOS：生成当前用户的 LaunchAgent。
+- Windows：生成当前用户交互登录触发的计划任务。
 
-The scheduler uses `Asia/Shanghai` and checks its schedule every 30 seconds. It runs one authenticated, read-only location preflight per day during the default 20-minute lead window (22:10–22:30 for a 22:30 report); preflight sends no check-in or report POST. The existing 30-minute quick catch-up is unchanged, followed by 10-minute recovery checks until the exclusive 23:55 cutoff, subject to the school’s schedule windows. An existing macOS 600-second keeper samples the window at its first tick within it rather than firing at exactly 22:10. Installing the service does not submit outside the applicable window. The computer must be powered on, network-connected, and have the user's session available. Recovery does not wake the computer or guarantee that login is renewed. Sleep, shutdown, captive portals, school outages, browser updates, or upstream page changes can prevent a report.
+`--all-accounts` 使服务启动统一账号调度器。`--write-only` 只生成定义，不运行服务管理命令。安装与移除仅针对该项目的服务定义。
 
-## Submission recovery
+服务记录 Node、项目和数据目录的绝对路径。移动项目或更换解释器后，需要在明确的维护操作中重新生成服务。单账号模式在启动时读取配置；统一多账号模式每轮重读配置，源码本身不热更新。
 
-`run --dry-run` performs checks and real location preflight without sending a check-in or report POST. `run` tries check-in first during the school check-in window, using available valid dormitory circles. If none is valid or check-in is definitively rejected, GoodNight fetches a fresh authenticated record and falls back to report only while it remains `PENDING` and the actual location is suitable. The default outside report is used only for an actually outside-campus location. An ambiguous check-in POST or timeout must not fall back to report. Separate per-date durable journals are written before each corresponding POST, and an exclusive lock prevents concurrent runs. If a request times out or the process stops after submission, run `check` before another operation.
-
-The exclusive per-date/per-operation POST claim is synchronously flushed before submission. If it exists after restart or an ambiguous POST, the next run performs GET reconciliation rather than repeating the POST. State files use flushed temporary writes followed by rename; these measures reduce duplicate sends and partial state, but cannot guarantee survival of every power loss or school-side retention. Treat only a verified saved school record as success.
-
-See [resilience and recovery](resilience.md) for failure archives, notifications, the 600-second legacy keeper caveat, and configuration reload behavior. Daemons read config at startup, so restart/reinstall the service after config edits. The Linux service is intended for desktops that integrate systemd’s `graphical-session.target`; other desktop environments may need their own user-session startup configuration. See [systemd desktop integration](https://github.com/systemd/systemd/blob/main/docs/DESKTOP_ENVIRONMENTS.md).
+服务器必须开机联网。桌面环境的休眠、窗口会话或通知权限也可能影响任务；运行器不会自动唤醒主机。每个账号的真实学校结果应单独验证并保留在私有状态目录。
