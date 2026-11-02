@@ -80,6 +80,25 @@ node bin/goodnight.mjs run --account student-b --dry-run
 
 预检通过后，在该账号私有 `config.json` 中设置 `submissionsEnabled=true`。真实提交仍受学校时段及配置截止时间约束。提交结果不明时只查询保存记录，不重复 POST。
 
+## 打卡授权票据
+
+学校当前提交接口还要求微信小程序签发的 `X-Checkin-Ticket`。网页登录成功只证明业务会话有效，不能替代打卡授权。服务器上的浏览器不会经过小程序入口，因此程序无法自动取得票据，需要本人导入；导入的票据保存在该账号私有目录，供定时任务使用。
+
+如果本人已从小程序取得该账号的授权入口链接（包含 `checkinTicket`）或票据，可以将其放入权限为 `600` 的私有文本文件，然后导入：
+
+```bash
+node bin/goodnight.mjs authorize --account student-b --ticket-file /private/path/checkin-ticket.txt
+node bin/goodnight.mjs status --account student-b
+```
+
+不传 `--ticket-file` 或 `--ticket-stdin` 时，只检查该账号已保存的票据。导入前会核验业务登录与账号身份，导入和读取都不会提交打卡。票据不应粘贴到命令行参数、日志或聊天中。
+
+也可用 `authorize --ticket-stdin` 通过管道或 SSH 标准输入传入票据或完整入口 URL，不能与 `--ticket-file` 同时使用。适合 iPhone 的“获取剪贴板 → 通过 SSH 运行脚本 → 显示结果”流程，详见 [iPhone 导入说明](iphone-ticket.md)。
+
+`authorization_available` 只表示票据已读取，`serverVerified=false` 表示尚未验证学校是否接受它。学校控制票据有效期，当前没有实现脱离微信小程序的自动签发或续期。缺少票据时，预检和提交返回 `need_authorization`，不会占用当天提交标记；补充授权后，调度会在原有窗口内再次检查。若已经尝试过真实提交，仍保留当日防重复提交限制。
+
+收到 `46001/46002/46003` 时会停用该票据，并保留错误码及明确的授权失败原因；需要本人重新完成小程序授权。`status` 只显示票据状态，票据内容不进入日志。
+
 ## 常驻运行
 
 ```bash

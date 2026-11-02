@@ -13,10 +13,13 @@ test('adapter fails closed on malformed envelope, auth expiry, redirects and tra
   }
 });
 test('request uses same authenticated context, fixed school origin and no redirect following',async()=>{
-  const {api,calls}=adapter({code:0,data:null});const body={synthetic:'fixture'};
+  const {api,calls}=adapter({code:0,data:{userData:{id:'synthetic-account'}}});const body={synthetic:'fixture'};
   assert.equal(api.submit,undefined);assert.equal(api.getKeywords,undefined);
+  await api.authenticate();api.importCheckinTicket('synthetic-ticket');
+  assert.equal(calls[0].opts.headers['X-Checkin-Ticket'],undefined);calls.length=0;
   await api.submitCheckin(body);assert.equal(calls[0].url,ORIGIN+'/daily-checkin/api/student-checkin-record/checkin');
   assert.equal(calls[0].opts.maxRedirects,0);assert.equal(calls[0].opts.headers.platform,'h5');assert.equal(calls[0].opts.data,body);
+  assert.equal(calls[0].opts.headers['X-Checkin-Ticket'],'synthetic-ticket');
 });
 test('local cookie retention changes only the school SESSION after successful auth',async()=>{
   const {api,ctx}=adapter({code:0,ok:true,data:{synthetic:true}});let added;

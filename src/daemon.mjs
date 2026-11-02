@@ -29,7 +29,7 @@ export async function tick({config,store,now = new Date(),report = runWithRetrie
     if(out.result==='window_not_open' && out.businessDate===date && out.nextAttemptAt && shanghaiDate(new Date(out.nextAttemptAt))===date) {
       state.nextReportDate=date;state.nextReportAt=out.nextAttemptAt;
       state.retryUntil=new Date(Math.min(Date.parse(out.nextAttemptAt)+config.catchUpMinutes*60000,Date.parse(`${date}T23:55:00+08:00`))).toISOString();
-    } else if(!out.submitted&&['need_login','location_fail','unknown'].includes(out.result)) {
+    } else if(!out.submitted&&['need_login','need_authorization','location_fail','unknown'].includes(out.result)) {
       const [h,m]=config.reportTime.split(':').map(Number);
       const deadline=state.nextReportDate===date&&state.retryUntil?Date.parse(state.retryUntil):Date.parse(`${date}T00:00:00+08:00`)+(h*60+m+config.catchUpMinutes)*60000;
       const next=now.getTime()+120000;

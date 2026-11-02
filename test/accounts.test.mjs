@@ -74,6 +74,7 @@ test('both accounts can submit once on the same date using only their own config
     const out=await runDaily({config,store,now:()=>NOW,sleep:async()=>{},
       open:async(_c,dir)=>({dir,close:async()=>{}}),
       adapterFactory:ctx=>({authenticate:async()=>{},
+        prepareCheckinAuthorization:async()=>({result:'authorization_available',serverVerified:false}),
         getToday:async()=>({code:0,data:{businessDate:DATE,recordStatusCode:done?'CHECKED_IN':'PENDING'}}),
         getSchedule:async()=>({code:0,data:{studentCheckinStartOffsetMinute:1260,studentCheckinEndOffsetMinute:1410}}),
         getLocation:async()=>config.fixedLocation,getCheckinLocations:async()=>({code:0,data:[{...config.fixedLocation,radiusMeter:100}]}),

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { shanghaiDate } from './policy.mjs';
 
-const FAILURE_RESULTS = new Set(['unknown','need_login','location_fail','report_rejected','checkin_rejected','window_missed']);
+const FAILURE_RESULTS = new Set(['unknown','need_login','need_authorization','location_fail','report_rejected','checkin_rejected','window_missed']);
 const NEUTRAL_RESULTS = new Set(['window_not_open','already_running']);
 const VALID_PHASES = new Set(['preflight','session','daily','report','checkin','recovery']);
 const FAILURE_PRIORITY = ['daily','report','checkin','recovery','preflight','session'];

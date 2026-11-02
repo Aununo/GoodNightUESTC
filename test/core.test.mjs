@@ -7,6 +7,7 @@ import { DEFAULTS as BASE_DEFAULTS, validateConfig, defaultDataDir } from '../sr
 import { Store } from '../src/store.mjs';
 import { runDaily, runWithRetries, inspect } from '../src/runner.mjs';
 import { BusinessError } from '../src/adapters/uestc.mjs';
+import { CheckinAuthorizationError } from '../src/checkin-ticket.mjs';
 import { checkinWindow, findDorm } from '../src/policy.mjs';
 import { dueReport, tick as tickActual } from '../src/daemon.mjs';
 const tick=options=>tickActual({...options,notify:async()=>{}});
@@ -25,6 +26,7 @@ function setup(t,overrides={}) {
   let record=pending();
   const adapter={
     authenticate:async()=>calls.push('auth'),getToday:async()=>{calls.push('today');return record;},
+    prepareCheckinAuthorization:async()=>({result:'authorization_available',serverVerified:false}),
     getSchedule:async()=>schedule(),getLocation:async()=>geo,getAddress:async()=>'',getUserAgent:async()=>'synthetic-test-agent',
     getCheckinLocations:async()=>ok([{...geo,radiusMeter:100}]),
     submitCheckin:async body=>{calls.push(['checkin',body]);record=saved();return ok(null);},
@@ -70,6 +72,37 @@ test('explicit rejection stays a rejection with no fallback or repeated POST',as
   assert.equal((await runDaily(f.options)).result,'checkin_rejected');
   await runDaily(f.options);
   assert.equal(posts(f.calls).length,1);
+});
+test('missing ticket stops before claiming a submission; adding authorization allows the scheduled attempt',async t=>{
+  let available=false;
+  const f=setup(t,{prepareCheckinAuthorization:async()=>{if(!available)throw new CheckinAuthorizationError('checkin_ticket_missing');}});
+  const out=await runWithRetries(f.options);
+  assert.equal(out.result,'need_authorization');assert.equal(out.reason,'checkin_ticket_missing');
+  assert.equal(out.submitted,false);assert.equal(posts(f.calls).length,0);
+  assert.equal(f.store.read('submission-checkin-'+DATE+'.json'),null);
+  available=true;
+  assert.equal((await runDaily(f.options)).result,'success');assert.equal(posts(f.calls).length,1);
+});
+test('dry-run and preflight require authorization and never claim or submit',async t=>{
+  const f=setup(t,{prepareCheckinAuthorization:async()=>{throw new CheckinAuthorizationError('checkin_ticket_missing');}});
+  assert.equal((await runDaily({...f.options,dryRun:true})).result,'need_authorization');
+  assert.equal((await inspect({...f.options,mode:'preflight'})).result,'need_authorization');
+  assert.equal(posts(f.calls).length,0);assert.equal(f.store.read('submission-checkin-'+DATE+'.json'),null);
+});
+test('school authorization rejection remains explicit through recovery and never repeats the POST',async t=>{
+  for(const code of [46001,46002,46003]) {
+    const f=setup(t,{submitCheckin:async body=>{f.calls.push(['checkin',body]);return {code,ok:false,msg:'private response payload'};}});
+    const out=await runWithRetries(f.options);
+    assert.equal(out.result,'need_authorization');assert.equal(out.reason,'checkin_ticket_rejected');assert.equal(out.code,code);
+    assert.equal((await runDaily(f.options)).result,'need_authorization');assert.equal(posts(f.calls).length,1);
+    const log=fs.readdirSync(path.join(f.store.dir,'logs')).map(x=>fs.readFileSync(path.join(f.store.dir,'logs',x),'utf8')).join('');
+    assert.match(log,/checkin_authorization_rejected/);assert.doesNotMatch(log,/private response payload/);
+    f.setRecord(saved());assert.equal((await runDaily(f.options)).result,'already_done');
+  }
+});
+test('saved school success takes precedence over a ticket rejection response',async t=>{
+  const f=setup(t,{submitCheckin:async body=>{f.calls.push(['checkin',body]);f.setRecord(saved());return {code:46001,ok:false};}});
+  assert.equal((await runDaily(f.options)).result,'success');assert.equal(posts(f.calls).length,1);
 });
 test('unknown check-in response is reconciled after restart without another POST',async t=>{
   const f=setup(t,{submitCheckin:async body=>{f.calls.push(['checkin',body]);throw new BusinessError('transport_error');}});
@@ -152,6 +185,18 @@ test('scheduler retries a pre-POST transient failure within the bounded catch-up
   const report=async()=>++calls===1?{result:'location_fail',submitted:false}:{result:'success',businessDate:DATE,submitted:true};
   await tick({config:DEFAULTS,store,now:NOW,report});assert.equal(store.read('scheduler.json').lastReportDate,undefined);
   await tick({config:DEFAULTS,store,now:new Date(`${DATE}T22:32:00+08:00`),report});assert.equal(calls,2);assert.equal(store.read('scheduler.json').lastReportDate,DATE);
+});
+test('scheduler resumes after new authorization arrives without an earlier submission claim',async t=>{
+  let available=false;
+  const f=setup(t,{prepareCheckinAuthorization:async()=>{if(!available)throw new CheckinAuthorizationError('checkin_ticket_missing');}});
+  const report=()=>runWithRetries(f.options);
+  const first=await tick({config:DEFAULTS,store:f.store,now:NOW,report});
+  assert.equal(first.result.result,'need_authorization');
+  assert.equal(f.store.read('scheduler.json').lastReportDate,undefined);
+  available=true;
+  const next=await tick({config:DEFAULTS,store:f.store,now:new Date(`${DATE}T22:32:00+08:00`),report});
+  assert.equal(next.result.result,'success');assert.equal(posts(f.calls).length,1);
+  assert.equal(f.store.read('scheduler.json').completionDate,DATE);
 });
 test('scheduler never retries ambiguous submitted outcomes',async t=>{
   const {store}=setup(t);let calls=0;

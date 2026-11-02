@@ -3,15 +3,17 @@ import { locate } from '../location.mjs';
 import { configuredLocation } from '../config.mjs';
 import { recoverSchoolSession } from '../auth-recovery.mjs';
 import { bindAccountIdentity } from '../accounts.mjs';
+import { createCheckinTicketManager, CHECKIN_AUTH_CODES } from '../checkin-ticket.mjs';
 export const ORIGIN = 'https://jzsz.uestc.edu.cn';
 export const CLIENT_SESSION_RETENTION_SECONDS = 7 * 24 * 3600;
 export const PORTAL = `${ORIGIN}/#/hall/home`;
 export const PAGE = `${ORIGIN}/daily-checkin-h5/index.html?appId=294#/pages/student/report-today/home/index`;
 export class BusinessError extends Error { constructor(code) { super(code); this.code = code; } }
 export function createUestcAdapter(ctx, config, {store,allowRecovery=config.autoRelogin===true,recover=recoverSchoolSession}={}) {
-  async function request(p, body) {
+  const authorization = createCheckinTicketManager(store);
+  async function request(p, body, headers = {}) {
     let response;
-    try { response = await ctx.request.fetch(ORIGIN + '/daily-checkin/api' + p, { method: body ? 'POST' : 'GET', data: body, headers: { platform: 'h5' }, timeout: 15000, maxRedirects: 0 }); }
+    try { response = await ctx.request.fetch(ORIGIN + '/daily-checkin/api' + p, { method: body ? 'POST' : 'GET', data: body, headers: { platform: 'h5', ...headers }, timeout: 15000, maxRedirects: 0 }); }
     catch { throw new BusinessError('transport_error'); }
     if (response.status() !== 200) throw new BusinessError('http_error');
     let r; try { r = await response.json(); } catch { throw new BusinessError('invalid_api_response'); }
@@ -26,6 +28,7 @@ export function createUestcAdapter(ctx, config, {store,allowRecovery=config.auto
         try {bindAccountIdentity(store,r.data.userData);}
         catch(error) {throw new BusinessError(error.code||'account_identity_unavailable');}
       }
+      authorization.bindIdentity(r.data.userData?.id);
       const session = (await ctx.cookies(ORIGIN)).find(c => c.name === 'SESSION' && c.domain === new URL(ORIGIN).hostname);
       // Preserve validated credentials through a prolonged connection outage.
       // Client retention is NOT server-side reauthentication or guaranteed renewal.
@@ -42,7 +45,17 @@ export function createUestcAdapter(ctx, config, {store,allowRecovery=config.auto
     getToday: () => request('/student-checkin-record/today'),
     getSchedule: () => request('/checkin-schedule/effective'),
     getCheckinLocations: () => request('/checkin-location/available-locations'),
-    submitCheckin: body => request('/student-checkin-record/checkin', body),
+    async prepareCheckinAuthorization() {
+      await authorization.require();
+      return {result:'authorization_available',serverVerified:false};
+    },
+    importCheckinTicket: input => authorization.import(input),
+    async submitCheckin(body) {
+      const ticket = await authorization.require();
+      const response = await request('/student-checkin-record/checkin', body, {'X-Checkin-Ticket':ticket});
+      if (CHECKIN_AUTH_CODES.has(response.code)) await authorization.reject(response.code);
+      return response;
+    },
     async getUserAgent() { const page = ctx.pages()[0] || await ctx.newPage(); return page.evaluate(() => navigator.userAgent); },
     async getLocation() {
       const fixed = configuredLocation(config);

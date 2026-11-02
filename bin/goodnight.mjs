@@ -15,6 +15,8 @@ import { daemon } from '../src/daemon.mjs';
 import { installService, uninstallService } from '../src/service.mjs';
 import { addAccount, listAccounts, selectAccount, accountStatus } from '../src/accounts.mjs';
 import { daemonAccounts } from '../src/multi-daemon.mjs';
+import { checkinTicketStatus, parseTicketInput } from '../src/checkin-ticket.mjs';
+import { readTicketStdin } from '../src/ticket-input.mjs';
 const HELP = `GoodNight — 晚安成电自动宿舍签到
 用法：node bin/goodnight.mjs <命令> [选项]
  init                  设置每日签到时间和浏览器
@@ -22,6 +24,7 @@ const HELP = `GoodNight — 晚安成电自动宿舍签到
  doctor [--online]     本地环境检查，可选业务登录检查
  check                 只读查询今日记录，不提交
  locations             只读查询学校返回的可用宿舍圈及坐标
+ authorize [--ticket-file 文件|--ticket-stdin]  读取本人已授权的打卡票据；从私有文件或SSH输入导入，不提交
  run [--dry-run]       只办理宿舍签到；dry-run不提交
  daemon                上海时间常驻调度（每天签到、周期会话检查）
  status                显示最近结果、预检、失败记录及会话状态
@@ -38,7 +41,19 @@ init选项：--time HH:mm --browser chrome|msedge|chromium --force
 桌面模式需本人已登录；Linux 服务器用 --server 并启用用户 linger。移动仓库或Node后请重新安装服务。
 `;
 function output(out) { console.log(JSON.stringify(out, null, 2)); }
-const good = new Set(['success','already_done','dry_run_ready','record_read','locations_read','session_valid']);
+const good = new Set(['success','already_done','dry_run_ready','record_read','locations_read','session_valid','authorization_available']);
+function readTicketFile(file) {
+  let fd;
+  try {
+    fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));
+    const stat=fs.fstatSync(fd);
+    if(!stat.isFile()||stat.size>32768||(process.platform!=='win32'&&(stat.mode&0o077)))throw new Error();
+    const input=fs.readFileSync(fd,'utf8');
+    if(Buffer.byteLength(input)>32768)throw new Error();
+    return input;
+  }catch{throw new Error('无法读取票据文件；请使用不超过 32 KiB、权限为 600 的普通文件');}
+  finally{if(fd!==undefined)fs.closeSync(fd);}
+}
 function browserInstalled(c) {
   if(c.browserChannel==='chromium') return fs.existsSync(chromium.executablePath());
   const edge=c.browserChannel==='msedge', candidates=[];
@@ -82,9 +97,11 @@ async function login(config,store) {
   }finally{rl?.close();if(ctx)await ctx.close().catch(()=>{});unlock();}
 }
 async function main() {
-  const {values:v,positionals:p}=parseArgs({allowPositionals:true,options:{'data-dir':{type:'string'},account:{type:'string'},'all-accounts':{type:'boolean'},label:{type:'string'},help:{type:'boolean',short:'h'},time:{type:'string'},browser:{type:'string'},force:{type:'boolean'},online:{type:'boolean'},'dry-run':{type:'boolean'},'write-only':{type:'boolean'},server:{type:'boolean'}}});
+  const {values:v,positionals:p}=parseArgs({allowPositionals:true,options:{'data-dir':{type:'string'},account:{type:'string'},'all-accounts':{type:'boolean'},label:{type:'string'},help:{type:'boolean',short:'h'},time:{type:'string'},browser:{type:'string'},force:{type:'boolean'},online:{type:'boolean'},'dry-run':{type:'boolean'},'write-only':{type:'boolean'},server:{type:'boolean'},'ticket-file':{type:'string'},'ticket-stdin':{type:'boolean'}}});
   if(v.help||!p.length){console.log(HELP);return;}
-  const cmd=p[0];if(!['init','login','doctor','check','locations','run','daemon','status','service','account'].includes(cmd))throw new Error('未知命令；用 --help 查看');
+  const cmd=p[0];if(!['init','login','doctor','check','locations','authorize','run','daemon','status','service','account'].includes(cmd))throw new Error('未知命令；用 --help 查看');
+  if((v['ticket-file']||v['ticket-stdin'])&&cmd!=='authorize')throw new Error('--ticket-file 和 --ticket-stdin 仅用于 authorize');
+  if(v['ticket-file']&&v['ticket-stdin'])throw new Error('--ticket-file 与 --ticket-stdin 不能同时使用');
   if(v.account&&v['all-accounts'])throw new Error('--account 与 --all-accounts 不能同时使用');
   if(v['all-accounts']&&!['daemon','status','check'].includes(cmd)&&!(cmd==='service'&&p[1]==='install'))throw new Error('--all-accounts 仅用于 daemon、status、check 或 service install');
   if(v.account&&['service','account'].includes(cmd))throw new Error('service 和 account 命令使用根目录；单个账号操作请使用 check/run/status 等命令');
@@ -118,7 +135,7 @@ async function main() {
   const {dataDir}=selectAccount(rootDir,v.account||'default');
   const store=new Store(dataDir);
   if(cmd==='init'){await initialize(store,v);return;}
-  if(cmd==='status'){output({dataDir,lastCheckin:store.read('last-result.json'),lastSession:store.read('last-session.json'),lastPreflight:store.read('last-preflight.json'),lastAuthRecovery:store.read('auth-recovery.json'),lastFailure:store.read('last-failure.json'),scheduler:store.read('scheduler.json')});return;}
+  if(cmd==='status'){output({dataDir,checkinAuthorization:checkinTicketStatus(store),lastCheckin:store.read('last-result.json'),lastSession:store.read('last-session.json'),lastPreflight:store.read('last-preflight.json'),lastAuthRecovery:store.read('auth-recovery.json'),lastFailure:store.read('last-failure.json'),scheduler:store.read('scheduler.json')});return;}
   if(cmd==='service'&&p[1]==='remove') {output(await uninstallService({dataDir,apply:!v['write-only']}));return;}
   if(cmd==='doctor') {
     let config,configError;try{config=loadConfig(dataDir);}catch(e){configError=e.message;}
@@ -127,6 +144,12 @@ async function main() {
     output(result);process.exitCode=result.nodeSupported&&result.configValid&&result.browserFound&&(!v.online||result.online?.result==='session_valid')?0:3;return;
   }
   const config=loadConfig(dataDir);
+  if(cmd==='authorize') {
+    const rawInput=v['ticket-file']?readTicketFile(v['ticket-file']):v['ticket-stdin']?await readTicketStdin(process.stdin):undefined;
+    const ticketInput=rawInput===undefined?undefined:parseTicketInput(rawInput);
+    const out=await inspect({config,store,mode:'authorization',ticketInput});
+    output(out);process.exitCode=good.has(out.result)?0:3;return;
+  }
   if(cmd==='service') {output(await installService({dataDir,entrypoint:fileURLToPath(import.meta.url),node:process.execPath,apply:!v['write-only'],server:!!v.server,allAccounts:!!v['all-accounts']}));return;}
   if(cmd==='login'){await login(config,store);return;}
   if(cmd==='daemon') {

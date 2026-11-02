@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DEFAULTS, loadConfig, validateConfig } from './config.mjs';
 import { Store } from './store.mjs';
+import { checkinTicketStatus } from './checkin-ticket.mjs';
 
 const DEFAULT_ACCOUNT = Object.freeze({id:'default',label:'原账号'});
 const ID = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -78,7 +79,7 @@ export function accountStatus(rootDir,account,{detailed=false}={}) {
   catch {return {...account,dataDir,result:'invalid_config'};}
   const result={...account,dataDir,reportTime:config.reportTime,submissionsEnabled:config.submissionsEnabled,
     locationProvider:config.locationProvider,autoRelogin:config.autoRelogin,
-    identityBound:!!store.read('identity.json'),lastCheckin:store.read('last-result.json')};
+    identityBound:!!store.read('identity.json'),checkinAuthorization:checkinTicketStatus(store),lastCheckin:store.read('last-result.json')};
   if(detailed)Object.assign(result,{lastSession:store.read('last-session.json'),lastPreflight:store.read('last-preflight.json'),
     lastAuthRecovery:store.read('auth-recovery.json'),lastFailure:store.read('last-failure.json'),scheduler:store.read('scheduler.json')});
   return result;

@@ -3,8 +3,10 @@ import { launchBrowser } from './browser.mjs';
 import { createUestcAdapter, BusinessError } from './adapters/uestc.mjs';
 import { validateConfig } from './config.mjs';
 import { apiSucceeded, todayState, summary, checkinWindow, checkinVerified, findDorm } from './policy.mjs';
+import { CHECKIN_AUTH_CODES } from './checkin-ticket.mjs';
 const sleepDefault = ms => new Promise(r => setTimeout(r, ms));
-const failure = e => e?.code === 'need_login' ? 'need_login' : 'unknown';
+const failure = e => ['need_login','need_authorization'].includes(e?.code) ? e.code : 'unknown';
+const failureReason = e => e?.code === 'need_authorization' ? e.reason : e instanceof BusinessError ? e.code : 'runtime_error';
 const fingerprint = config => crypto.createHash('sha256')
   .update(JSON.stringify(['checkin',config.locationProvider,config.fixedLocation])).digest('hex');
 
@@ -36,12 +38,15 @@ async function submitAndVerify(adapter,date,config,store,body,options) {
   let response,postError;
   try {
     response=await adapter.submitCheckin(body);
-    options.emit('submit_response',{operation:'checkin',code:response.code,ok:response.ok});
+    options.emit('submit_response',{operation:'checkin',code:response.code,ok:response.ok,
+      ...(CHECKIN_AUTH_CODES.has(response.code)?{reason:'checkin_authorization_rejected'}:{})});
   }catch(e){postError=e;options.emit('submit_response_unknown',{operation:'checkin'});}
   let out=await reconcile(adapter,date,config,options);
   if(out.result==='unknown'&&(postError?.code==='need_login'||response?.code===5000))out={...out,result:'need_login'};
+  else if(out.result==='unknown'&&CHECKIN_AUTH_CODES.has(response?.code)&&out.confirmedPending)out={...out,result:'need_authorization',reason:'checkin_ticket_rejected',code:response.code};
   else if(out.result==='unknown'&&response?.code===4001&&response.ok!==true&&out.confirmedPending)out={...out,result:'checkin_rejected'};
-  store.write(name,{businessDate:date,kind:'checkin',fingerprint:fingerprint(config),state:out.result,at:new Date().toISOString()});
+  store.write(name,{businessDate:date,kind:'checkin',fingerprint:fingerprint(config),state:out.result,
+    ...(CHECKIN_AUTH_CODES.has(response?.code)?{authorizationCode:response.code}:{}),at:new Date().toISOString()});
   return out;
 }
 export async function runDaily({config,store,dryRun=false,now=()=>new Date(),open=launchBrowser,adapterFactory=createUestcAdapter,sleep=sleepDefault}) {
@@ -60,10 +65,18 @@ export async function runDaily({config,store,dryRun=false,now=()=>new Date(),ope
     if(state==='done'&&!dryRun)return {result:'already_done',...summary(record)};
     const pastCutoff=()=>now().getTime()>=Date.parse(date+'T'+config.recoveryCutoff+':00+08:00');
     if(pastCutoff())return {result:'window_missed',reason:'recovery_cutoff_reached'};
-    if(store.read('submission-checkin-'+date+'.json')&&!dryRun)return await reconcile(adapter,date,config,{sleep,emit});
+    const priorSubmission=store.read('submission-checkin-'+date+'.json');
+    if(priorSubmission&&!dryRun) {
+      const out=await reconcile(adapter,date,config,{sleep,emit});
+      if(out.result==='unknown'&&out.confirmedPending&&CHECKIN_AUTH_CODES.has(priorSubmission.authorizationCode))
+        return {...out,result:'need_authorization',reason:'checkin_ticket_rejected',code:priorSubmission.authorizationCode};
+      return out;
+    }
     const window=checkinWindow(await adapter.getSchedule(),date,now());
     if(window.reason==='invalid_schedule')return {result:'unknown',reason:'invalid_checkin_schedule'};
     if(window.result!=='open')return window;
+    // Check before claiming today's submission: missing authorization must not burn the attempt.
+    await adapter.prepareCheckinAuthorization();
     let geo;
     try {
       geo=await adapter.getLocation();
@@ -86,7 +99,7 @@ export async function runDaily({config,store,dryRun=false,now=()=>new Date(),ope
     const clientTime=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(now());
     submitted=true;
     return await submitAndVerify(adapter,date,config,store,{latitude:geo.latitude,longitude:geo.longitude,reverseGeocode:address,userAgent:ua,clientTime,accuracy:geo.accuracy},{sleep,emit});
-  }catch(e){return {result:failure(e),reason:e instanceof BusinessError?e.code:'runtime_error',submitted};}
+  }catch(e){return {result:failure(e),reason:failureReason(e),submitted};}
   finally{if(ctx)await ctx.close().catch(()=>{});unlock();}
 }
 export async function runWithRetries(options) {
@@ -98,18 +111,21 @@ export async function runWithRetries(options) {
   }
   options.store.write('last-result.json',{at:new Date().toISOString(),...out});options.store.log('result',out);return out;
 }
-export async function inspect({config,store,mode='check',open=launchBrowser,adapterFactory=createUestcAdapter}) {
+export async function inspect({config,store,mode='check',ticketInput,open=launchBrowser,adapterFactory=createUestcAdapter}) {
   const unlock=store.acquire();if(!unlock)return {result:'already_running'};
   let ctx;
   try {
     ctx=await open(config,store.dir);const adapter=adapterFactory(ctx,config,{store});await adapter.authenticate();
     if(mode==='session')return {result:'session_valid'};
+    if(mode==='authorization')return ticketInput===undefined
+      ?await adapter.prepareCheckinAuthorization():await adapter.importCheckinTicket(ticketInput);
     if(mode==='locations') {
       const r=await adapter.getCheckinLocations();
       if(!apiSucceeded(r)||!Array.isArray(r.data))return {result:'unknown',reason:'dorm_fences_unavailable'};
       return {result:'locations_read',locations:r.data};
     }
     if(mode==='preflight') {
+      await adapter.prepareCheckinAuthorization();
       let geo;try {geo=await adapter.getLocation();}catch(e){return {result:e.code==='need_login'?'need_login':'location_fail',reason:'location_unavailable_or_frontend_changed'};}
       if(!Number.isFinite(geo?.accuracy)||geo.accuracy<0||geo.accuracy>config.maxAccuracyMeters)return {result:'location_fail',reason:'accuracy_insufficient'};
       if(!findDorm(geo,await adapter.getCheckinLocations()))return {result:'location_fail',reason:'outside_dormitory_range'};
@@ -117,6 +133,6 @@ export async function inspect({config,store,mode='check',open=launchBrowser,adap
     }
     const r=await adapter.getToday();if(!apiSucceeded(r)||!r.data)return {result:'unknown',reason:'today_unavailable'};
     return {result:'record_read',...summary(r)};
-  }catch(e){return {result:failure(e),reason:e instanceof BusinessError?e.code:'runtime_error'};}
+  }catch(e){return {result:failure(e),reason:failureReason(e)};}
   finally{if(ctx)await ctx.close().catch(()=>{});unlock();}
 }

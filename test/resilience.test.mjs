@@ -57,6 +57,13 @@ test('phase-specific success does not resolve unrelated failures and neutral out
   await recordOutcome({ store, phase: 'checkin', now, notify, out: { result: 'window_not_open' } });
   assert.equal(alerts.length, 1);
 });
+test('missing operation authorization is a persisted failure, independent of login health',async()=>{
+  const store=fakeStore(),alerts=[],now=at('2026-10-12T12:00:00Z');
+  await recordOutcome({store,phase:'preflight',now,notify:async v=>alerts.push(v),out:{result:'need_authorization',reason:'checkin_ticket_missing'}});
+  await recordOutcome({store,phase:'session',now,out:{result:'session_valid'}});
+  assert.equal(store.files.get('last-failure.json').result,'need_authorization');
+  assert.equal(alerts.length,1);assert.equal(alerts[0].result,'need_authorization');
+});
 
 test('session recovery preserves an outstanding daily failure and summary priority', async () => {
   const store = fakeStore(), now = at('2026-10-12T12:00:00Z'), notify = async () => {};
